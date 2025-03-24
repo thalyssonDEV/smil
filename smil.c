@@ -22,10 +22,15 @@
 #define I2C_SCL 15            /**< Pino SCL para comunicação I2C */
 
 #define ALTURA_MAX_LIXEIRA 120 /**< Altura máxima da lixeira em centímetros */
+#define MAX_MEASUREMENTS 10    /**< Número máximo de medições para as tendências */
 
 // Definição das constantes de leitura do joystick
 #define JOYSTICK_VRY_MAX 3500  /**< Valor máximo para o eixo Y do joystick */
 #define JOYSTICK_VRY_MIN 500   /**< Valor mínimo para o eixo Y do joystick */
+
+// Definição dos valores máximos e mínimos para o eixo X
+#define JOYSTICK_VRX_MAX 3500  /**< Valor máximo para o eixo X do joystick */
+#define JOYSTICK_VRX_MIN 500   /**< Valor mínimo para o eixo X do joystick */
 
 // Estrutura para representar o estado do sistema da lixeira
 typedef struct {
@@ -36,18 +41,26 @@ typedef struct {
     float ocupacao;           /**< Percentual de ocupação da lixeira */
 } SistemaLixeira;
 
+// Enumeração para representar as seções do display
+typedef enum {
+    SECAO_PRINCIPAL,  /**< Seção principal do display */
+    SECAO_GRAFICOS,   /**< Seção de gráficos do display */
+    SECAO_TENDENCIAS,  /**< Seção de tendências do display */
+    SECAO_MODO_NOTURNO, /**< Seção do modo noturno do display */
+} SecaoDisplay;
+
+SecaoDisplay secaoAtual = SECAO_PRINCIPAL;  /**< Variável que armazena a seção atual do display, iniciando na seção principal */
 
 // Instância do Display SSD1306
 ssd1306_t display; /**< Inicializa a instância do display OLED */
 
-
 // Instância do sistema da lixeira com valores iniciais
 SistemaLixeira sistema = {
-    .brilho = 6,
-    .funcionando = false,
-    .modoNoturnoAtivado = true,
-    .distancia = 0.0,
-    .ocupacao = 0.
+    .brilho = 4,                /**< Nível inicial de brilho dos LEDs */
+    .funcionando = false,        /**< Indica se o sistema está em funcionamento */
+    .modoNoturnoAtivado = true,  /**< Define se o modo noturno está ativado */
+    .distancia = 0.0,            /**< Distância inicial medida pelo sensor ultrassônico */
+    .ocupacao = 0.0              /**< Percentual inicial de ocupação da lixeira */
 };
 
 
@@ -136,6 +149,62 @@ void emitirAlertaSonoro() {
     }
 }
 
+// Vetor para armazenar as últimas medições de ocupação e distância
+float ocupacaoTrend[MAX_MEASUREMENTS];  /**< Vetor que armazena as últimas medições de ocupação da lixeira */
+
+/**
+ * @brief Função para atualizar as medições de tendência.
+ * 
+ * A função desloca os valores antigos para a esquerda e adiciona a nova medição 
+ * na última posição do vetor, garantindo que sempre contenha as medições mais recentes.
+ * 
+ * @param ocupacao Valor atual da ocupação a ser armazenado.
+ */
+void atualizarTendencias(float ocupacao) {
+    // Move os valores antigos para a esquerda
+    for (int i = 0; i < MAX_MEASUREMENTS - 1; i++) {
+        ocupacaoTrend[i] = ocupacaoTrend[i + 1];
+    }
+    
+    // Adiciona as novas medições nas últimas posições
+    ocupacaoTrend[MAX_MEASUREMENTS - 1] = ocupacao;
+}
+
+
+/**
+ * @brief Função para desenhar o gráfico de tendência no display.
+ * 
+ * A função desenha um gráfico que representa a variação da ocupação ao longo das medições recentes,
+ * permitindo visualizar tendências de uso da lixeira.
+ */
+void displayGraficoTendencia() {
+    int posX = 10;  /**< Posição inicial no eixo X para o gráfico */
+    int posYTexto = 5;  /**< Posição vertical do texto acima do gráfico */
+    char tituloTendencia[] = "Ocupacao Tendencias"; /**< Texto do título do gráfico de tendência */
+    int textoLargura = strlen(tituloTendencia) * 6;  /**< Calcula a largura do título assumindo 6 pixels por caractere */
+    int posXTexto = (SCREEN_WIDTH - textoLargura) / 2;  /**< Centraliza o título no eixo X */
+
+    uint32_t scale = 1;  /**< Escala do texto (1 é o tamanho normal) */
+    ssd1306_draw_string(&display, posXTexto, posYTexto, scale, tituloTendencia);  /**< Desenha o título no display */
+
+    // Posição inicial do gráfico logo abaixo do título
+    int alturaMaxima = SCREEN_HEIGHT - (posYTexto + 10);  /**< Define a altura máxima do gráfico abaixo do título */
+    int larguraGrafico = SCREEN_WIDTH - 20;  /**< Define a largura do gráfico */
+
+    // Desenha a linha de tendência para a ocupação
+    for (int i = 1; i < MAX_MEASUREMENTS; i++) {
+        int x1 = (i - 1) * (larguraGrafico / (MAX_MEASUREMENTS - 1)) + posX;  /**< Calcula a posição X do ponto anterior */
+        int x2 = i * (larguraGrafico / (MAX_MEASUREMENTS - 1)) + posX;  /**< Calcula a posição X do ponto atual */
+        
+        // Calcula a altura da linha (ocupação)
+        int y1 = alturaMaxima - (int)(ocupacaoTrend[i - 1] / 100.0 * alturaMaxima);  /**< Converte ocupação em altura */
+        int y2 = alturaMaxima - (int)(ocupacaoTrend[i] / 100.0 * alturaMaxima);  /**< Converte ocupação em altura */
+        
+        // Desenha a linha entre os pontos (x1, y1) e (x2, y2)
+        ssd1306_draw_line(&display, x1, y1 + posYTexto + 10, x2, y2 + posYTexto + 10);  /**< Desenha a linha da tendência de ocupação */
+    }
+}
+
 
 /**
  * @brief Função para centralizar o texto na tela do display SSD1306.
@@ -153,32 +222,147 @@ void centralizarTexto(const char *texto, int linha) {
 
 
 /**
- * @brief Função para atualizar o display com as informações do sistema.
+ * @brief Função para exibir as informações no display.
  * 
- * A função limpa o display e exibe informações sobre o funcionamento do sensor,
- * a ocupação da lixeira, a distância medida e o status do modo noturno.
+ * Essa função exibe os dados atuais do sistema, incluindo o percentual de ocupação da lixeira, 
+ * a distância medida pelo sensor e o estado do modo noturno.
  */
-void atualizarDisplayStatus() {
-    ssd1306_clear(&display);  /**< Limpa o display */
-
+void displayInfos(){
     if (sistema.funcionando) {  /**< Se o sistema está funcionando */
-        centralizarTexto("SENSOR: Ativado", 0);  /**< Exibe que o sensor está ativado */
+        centralizarTexto("SMIL", 0);  /**< Exibe que o título do projeto */
 
         char textoOcupacao[32];
         snprintf(textoOcupacao, sizeof(textoOcupacao), "Ocupacao: %.1f%%", sistema.ocupacao);  
         centralizarTexto(textoOcupacao, 16);  /**< Exibe a ocupação da lixeira */
 
         char textoDistancia[32];
-        snprintf(textoDistancia, sizeof(textoDistancia), "Distancia: %.1f cm", sistema.distancia);  
+        snprintf(textoDistancia, sizeof(textoDistancia), "Distancia: %.1f Cm", sistema.distancia);  
         centralizarTexto(textoDistancia, 32);  /**< Exibe a distância medida pelo sensor */
 
-        char modoTexto[32];
-        snprintf(modoTexto, sizeof(modoTexto), "Modo Noturno: %s", sistema.modoNoturnoAtivado ? "Enable" : "Disable");
-        centralizarTexto(modoTexto, 48);  /**< Exibe o status do modo noturno */
     } else {  
         centralizarTexto("SENSOR: Desativado", SCREEN_HEIGHT / 2 - 8);  /**< Exibe que o sensor está desativado */
     }
+}
+
+
+/**
+ * @brief Função para exibir o status do modo noturno no display.
+ * 
+ * A função exibe a opção de ativar ou desativar o modo noturno e destaca a opção selecionada.
+ * 
+ * @note A função usa a variável 'sistema.modoNoturnoAtivado' para determinar o estado atual 
+ *       do modo noturno e exibe a mensagem correspondente.
+ */
+void displayModo() {
+    char modoTextoNormal[32];
+    char modoTextoNoturno[32];
+
+    centralizarTexto("MODO", 0);
+
+    // Formata as strings para exibir as opções "Normal" e "Noturno"
+    snprintf(modoTextoNormal, sizeof(modoTextoNormal), "Normal");
+    snprintf(modoTextoNoturno, sizeof(modoTextoNoturno), "Noturno");
+
+    // Exibe a seta ao lado da opção selecionada
+    if (sistema.modoNoturnoAtivado) {  // Se o modo noturno estiver ativado
+        centralizarTexto("Normal", 16);  // Exibe "Normal" na linha 16
+        centralizarTexto("-> Noturno", 32);  // Exibe "Noturno" na linha 32 com a seta à esquerda
+    } else {  // Se o modo normal estiver ativado
+        centralizarTexto("-> Normal", 16);  // Exibe "Normal" na linha 16 com a seta à esquerda
+        centralizarTexto("Noturno", 32);  // Exibe "Noturno" na linha 32
+    }
+}
+
+
+/**
+ * @brief Função para exibir os gráficos de ocupação e distância no display SSD1306.
+ * 
+ * A função desenha barras horizontais representando a ocupação e a distância em gráficos.
+ * 
+ */
+void displayGraficos() {
+    char textoOcupacao[32];  /**< String para armazenar o texto da porcentagem de ocupação */
+    char textoDistancia[32];  /**< String para armazenar o texto da distância */
+
+    // Definir as dimensões dos gráficos (tamanho da barra e posição inicial)
+    int alturaGrafico = 10;  /**< Altura fixa para as barras horizontais (pode ser ajustada) */
+    int larguraMaximaGrafico = SCREEN_WIDTH - 20;  /**< Largura máxima da barra (ajustada com borda de 10 pixels em cada lado) */
+
+    // Calcular a largura das barras baseadas na ocupação e distância
+    int larguraOcupacao = (int)(sistema.ocupacao / 100.0 * larguraMaximaGrafico);  /**< Calcula a largura da barra da ocupação */
+    int larguraDistancia = (int)(sistema.distancia / ALTURA_MAX_LIXEIRA * larguraMaximaGrafico);  /**< Calcula a largura da barra da distância */
+
+    // Desenha o gráfico de ocupação (barra horizontal)
+    for (int x = 10; x < 10 + larguraOcupacao; x++) {  /**< Itera ao longo da largura da barra de ocupação */
+        for (int y = 20; y < 20 + alturaGrafico; y++) {  /**< Desenha a barra no Y = 20 (altura do gráfico) */
+            ssd1306_draw_pixel(&display, x, y);  /**< Desenha o pixel */
+        }
+    }
+
+    // Desenha o gráfico de distância (barra horizontal)
+    for (int x = 10; x < 10 + larguraDistancia; x++) {  /**< Itera ao longo da largura da barra de distância */
+        for (int y = 40; y < 40 + alturaGrafico; y++) {  /**< Desenha a barra no Y = 40 (altura do gráfico) */
+            ssd1306_draw_pixel(&display, x, y);  /**< Desenha o pixel */
+        }
+    }
+
+    // Exibe o texto "Ocupação %" no topo da tela
+    centralizarTexto("Ocupacao %", 0);  /**< Centraliza o texto "Ocupacao %" no topo da tela */
+
+    // Exibe a porcentagem de ocupação no centro da tela, sobre o gráfico
+    snprintf(textoOcupacao, sizeof(textoOcupacao), "%.1f%%", sistema.ocupacao);  /**< Converte o valor da ocupação para string */
     
+    // Centraliza o texto da porcentagem no centro do display, acima do gráfico de ocupação
+    int textoLargura = strlen(textoOcupacao) * 6;  /**< Calcula a largura do texto da ocupação */
+    int posX = (SCREEN_WIDTH - textoLargura) / 2;  /**< Calcula a posição X para centralizar o texto */
+    int posY = 10;  /**< Posição para o texto da ocupação */
+    uint32_t scale = 1;  /**< Escala do texto (1 é o tamanho normal) */
+    ssd1306_draw_string(&display, posX, posY, scale, textoOcupacao);  /**< Desenha o texto da porcentagem */
+
+    // Exibe o texto "Distância" no gráfico de distância
+    centralizarTexto("Distancia Cm", 30);  /**< Texto "Distancia" um pouco mais abaixo */
+
+    // Exibe a distância no centro da tela, sobre o gráfico de distância
+    snprintf(textoDistancia, sizeof(textoDistancia), "%.1f cm", sistema.distancia);  /**< Converte o valor da distância para string */
+    
+    // Centraliza o texto da distância no centro do display, acima do gráfico de distância
+    textoLargura = strlen(textoDistancia) * 6;  /**< Calcula a largura do texto da distância */
+    posX = (SCREEN_WIDTH - textoLargura) / 2;  /**< Calcula a posição X para centralizar o texto */
+    posY = 50;  /**< Posição para o texto da distância */
+
+    ssd1306_draw_string(&display, posX, posY, scale, textoDistancia);  /**< Desenha o texto da distância */
+}
+
+
+/**
+ * @brief Função para atualizar o display com as informações do sistema.
+ * 
+ * A função limpa o display e exibe informações sobre o funcionamento do sensor,
+ * a ocupação da lixeira, a distância medida e o status do modo noturno.
+ */
+void atualizarDisplay() {
+    ssd1306_clear(&display);  /**< Limpa o display */
+
+    switch ((secaoAtual)){
+        case SECAO_PRINCIPAL:
+            displayInfos();  /**< Exibe as informações do sistema */
+            break;
+
+        case SECAO_GRAFICOS:
+            displayGraficos();  /**< Exibe os gráficos de ocupação e distância */
+            break;
+
+        case SECAO_TENDENCIAS:
+            displayGraficoTendencia();  /**< Desenha o gráfico de tendência */
+            break;
+
+        case SECAO_MODO_NOTURNO:
+            displayModo();  /**< Exibe o status do modo noturno */
+            break;
+
+        default:
+            break;
+    }
     ssd1306_show(&display);  /**< Atualiza o display com as informações */
 }
 
@@ -204,19 +388,71 @@ void ajustarBrilho(int ajuste) {
 
 
 /**
+ * @brief Função para ler o valor do eixo X do joystick.
+ * 
+ * A função seleciona a entrada do ADC correspondente ao eixo X (VRX) do joystick
+ * e retorna o valor lido, permitindo determinar a direção do movimento.
+ * 
+ * @return Valor lido do ADC correspondente ao eixo X do joystick.
+ */
+uint16_t ler_joystick_x() {
+    adc_select_input(1); // Seleciona o ADC1 (VRX)
+
+    return adc_read();
+}
+
+
+/**
+ * @brief Função para ler o valor do eixo Y do joystick.
+ * 
+ * A função seleciona a entrada do ADC correspondente ao eixo Y (VRY) do joystick
+ * e retorna o valor lido, permitindo determinar a posição vertical do movimento.
+ * 
+ * @return Valor lido do ADC correspondente ao eixo Y do joystick.
+ */
+uint16_t ler_joystick_y() {
+    adc_select_input(0); // Seleciona o ADC0 (VRY)
+
+    return adc_read();   // Lê o valor do eixo Y
+}
+
+
+/**
+ * @brief Função para verificar a posição do eixo X do joystick e alternar entre seções.
+ * 
+ * A função lê o valor do eixo X do joystick e verifica se ele ultrapassa os limites 
+ * definidos. Se o valor for maior que o máximo permitido, a seção avança para a próxima.
+ * Se for menor que o mínimo permitido, a seção retrocede. O comportamento de alternância
+ * entre seções é circular.
+ */
+void verificarJoystickX() {
+    uint16_t vrx = ler_joystick_x();  /**< Lê o valor do eixo X do joystick */
+
+    if (vrx > JOYSTICK_VRX_MAX) {  /**< Se o valor do eixo X for maior que o máximo (movimento para a direita) */
+        secaoAtual = (secaoAtual + 1) % 4;  /**< Avança para a próxima seção (circular com 4 seções) */
+        sleep_ms(150);  /**< Delay para evitar mudanças rápidas */
+    }
+    else if (vrx < JOYSTICK_VRX_MIN) {  /**< Se o valor do eixo X for menor que o mínimo (movimento para a esquerda) */
+        secaoAtual = (secaoAtual == 0) ? 3 : secaoAtual - 1;  /**< Volta para a seção anterior (circular com 4 seções) */
+        sleep_ms(150);  /**< Delay para evitar mudanças rápidas */
+    }
+}
+
+
+/**
  * @brief Função para verificar as leituras do joystick e ajustar o brilho.
  * 
  * A função lê o valor do eixo Y do joystick e ajusta o brilho de acordo com o valor
  * lido, permitindo ao usuário controlar a intensidade dos LEDs.
  */
-void verificarJoystick() {
-    adc_select_input(0);  
-    uint16_t vry = adc_read();  /**< Lê o valor do eixo Y do joystick */
+void verificarJoystickY() {
+    uint16_t vry = ler_joystick_y();  /**< Lê o valor do eixo Y do joystick */
 
     if (vry > JOYSTICK_VRY_MAX) {  /**< Se o valor do eixo Y for maior que o máximo, diminui o brilho */
         ajustarBrilho(-1);  
         sleep_ms(150);  /**< Pequeno delay para evitar mudanças muito rápidas */
     } 
+
     else if (vry < JOYSTICK_VRY_MIN) {  /**< Se o valor do eixo Y for menor que o mínimo, aumenta o brilho */
         ajustarBrilho(1);  
         sleep_ms(150);
@@ -277,6 +513,10 @@ void inicializarPinos() {
     gpio_init(JOYSTICK_SW); /**< Inicializa o pino do botão do joystick */
     gpio_set_dir(JOYSTICK_SW, GPIO_IN); /**< Define o pino do botão do joystick como entrada */
     gpio_pull_up(JOYSTICK_SW); /**< Ativa o resistor de pull-up interno para o botão do joystick */
+    adc_gpio_init(JOYSTICK_VRX);
+    gpio_init(JOYSTICK_SW);
+    gpio_set_dir(JOYSTICK_SW, GPIO_IN);
+    gpio_pull_up(JOYSTICK_SW);
 
     ws2812b_init(pio0, 7, 25); /**< Inicializa a matriz de LEDs WS2812B */
     ws2812b_set_global_dimming(sistema.brilho); /**< Ajusta o brilho global dos LEDs */
@@ -338,7 +578,7 @@ int main() {
         bool estadoBotaoModoNoturno = gpio_get(BUTTON_NIGHT_MODE); /**< Lê o estado atual do botão de modo noturno */
 
         // Verifica se o botão de modo noturno foi pressionado (transição de estado)
-        if (estadoBotaoModoNoturno && !ultimoEstadoBotaoModoNoturno) botaoPressionadoModoNoturno = true;
+        if (estadoBotaoModoNoturno && !ultimoEstadoBotaoModoNoturno && secaoAtual == SECAO_MODO_NOTURNO) botaoPressionadoModoNoturno = true;
         ultimoEstadoBotaoModoNoturno = estadoBotaoModoNoturno;
 
         // Alterna o estado do modo noturno ao pressionar o botão
@@ -353,7 +593,9 @@ int main() {
             sistema.ocupacao = calcularOcupacao(sistema.distancia); /**< Calcula a ocupação da lixeira com base na distância */
 
             printf("Distância: %.2f cm | Ocupação: %.1f%%\n", sistema.distancia, sistema.ocupacao);
-            atualizarDisplayStatus();  /**< Atualiza o status no display */
+            atualizarTendencias(sistema.ocupacao);  // Atualiza as tendências
+
+            atualizarDisplay();  /**< Atualiza o status no display */
 
             // Ajusta a cor dos LEDs conforme a ocupação da lixeira
             if (sistema.ocupacao < 65.0) {
@@ -367,12 +609,13 @@ int main() {
             ws2812b_render(); /**< Atualiza os LEDs com a cor definida */
 
         } else {
-            atualizarDisplayStatus(); /**< Atualiza o display para mostrar que o sistema está desligado */
+            atualizarDisplay(); /**< Atualiza o display para mostrar que o sistema está desligado */
             ws2812b_fill_all(GRB_BLACK); /**< Desliga todos os LEDs */
             ws2812b_render(); /**< Atualiza os LEDs para refletir a cor apagada */
         }
 
-        verificarJoystick(); /**< Verifica o estado do joystick e ajusta o brilho */
+        verificarJoystickY(); /**< Verifica o estado do joystick e ajusta o brilho */
+        verificarJoystickX(); /**< Verifica o estado do joystick e alterna a tela */
         sleep_ms(100);  /**< Atraso de 100ms para evitar consumo desnecessário da CPU */
     }
 }
