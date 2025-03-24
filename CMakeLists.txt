@@ -79,7 +79,7 @@ add_executable(smil smil.c)
 add_subdirectory(
     libs/RP2040-WS2812B-Animation
 )
-add_subdirectory("C:/Users/thaly/OneDrive/Desktop/smil/pico-ssd1306")
+add_subdirectory("C:/Users/thaly/Desktop/smil/pico-ssd1306")
 
 pico_set_program_name(smil "smil")
 pico_set_program_version(smil "0.1")
